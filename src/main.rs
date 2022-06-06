@@ -11,7 +11,7 @@ handlebars_helper!(spacer: |sm: u8, md: u8, lg: u8| {
     if sm > 12 || md > 12 || lg > 12 {
         format!("<div><p>w3 column cannot exceed l12</p><div>")
     } else {
-        format!("<div class=\"w3-container w3-content w3-col s{sm} m{md} l{lg}\"></div>")
+        format!("<div class=\"w3-container w3-content w3-col s{sm} m{md} l{lg}\" aria-hidden=\"true\"></div>")
     }
 });
 
