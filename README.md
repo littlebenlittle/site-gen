@@ -1,25 +1,5 @@
-# benlittle.dev
+# Static Site Generator
 
-## Development
+Super simple static site generator in the sprit of [Jekyll](https://jekyllrb.com/).
 
-Rebuild on changes
-
-```sh
-nix-shell
-build
-# or
-watch
-```
-
-Serve locally
-
-```sh
-cd _site
-python -m http.server 4000
-```
-
-Package source files
-
-```sh
-pack
-```
+[Example project](https://github.com/littlebenlittle/benlittle.dev)
