@@ -7,12 +7,8 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-handlebars_helper!(spacer: |sm: u8, md: u8, lg: u8| {
-    if sm > 12 || md > 12 || lg > 12 {
-        format!("<div><p>w3 column cannot exceed l12</p><div>")
-    } else {
-        format!("<div class=\"w3-container w3-content w3-col s{sm} m{md} l{lg}\" aria-hidden=\"true\"></div>")
-    }
+handlebars_helper!(lt: |left: u16, right: u16| {
+    left < right
 });
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,7 +34,7 @@ fn main() -> Result<()> {
 
     log::info!("initializing handlebars");
     let mut handlebars = Handlebars::new();
-    handlebars.register_helper("spacer", Box::new(spacer));
+    handlebars.register_helper("spacer", Box::new(lt));
 
     log::info!("registering templates");
     register_templates_dir(PathBuf::from(&config.templates), &mut handlebars)?;
@@ -129,7 +125,7 @@ fn compile_markdown(
         .to_owned();
     let content = markdown::to_html(&md);
     fm.insert(String::from("content"), json!(content));
-    let html: String = handlebars.render(&tmpl_name, &fm)?;
+    let html: String = handlebars.render(&tmpl_name, &fm).context("{path:?}")?;
     let mut out_name = get_file_stem(path).to_owned();
     out_name.push_str(".html");
     return Ok(Some((html, out_name)));

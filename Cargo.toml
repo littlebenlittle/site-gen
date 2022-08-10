@@ -15,6 +15,6 @@ serde = { version = "1.0", features = [ "derive"] }
 serde_yaml = "0.8"
 serde_json = "1.0"
 extract-frontmatter = "4.1"
-markdown = "0.3"
+markdown = { git = "https://github.com/johannhof/markdown.rs", branch = "master" }
 chrono = "0.4"
 regex = "1.5"
