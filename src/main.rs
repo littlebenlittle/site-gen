@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate handlebars;
 use anyhow::{bail, Context, Result};
-use handlebars::Handlebars;
+use handlebars::{Handlebars, JsonValue};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -115,8 +115,9 @@ fn compile_markdown(
     globals: &JsonMap,
     handlebars: &Handlebars,
 ) -> Result<Option<(String, String)>> {
-    let (fm, md): (JsonMap, String) = split_frontmatter(path)?;
+    let (fm, mut md): (JsonMap, String) = split_frontmatter(path)?;
     let mut fm = replace_globals(fm, globals);
+    md = replace_uuid_links(md, globals);
     let tmpl_name: String = fm
         .get("template")
         .expect("expected fronmatter to contain template name")
@@ -144,6 +145,51 @@ fn replace_globals(obj: JsonMap, globals: &JsonMap) -> JsonMap {
         }
     }
     new_obj
+}
+
+use regex::Regex;
+
+fn replace_uuid_links(mut text: String, globals: &JsonMap) -> String {
+    let mut new_text = text.clone();
+    let re = Regex::new(r"\[[^\]]+\]\(:([a-zA-Z0-9]+)\)").unwrap();
+    let mut offset = 0;
+    loop {
+        let link = match re.captures(&text) {
+            Some(cap) => cap,
+            None => break,
+        };
+        let url = {
+            let posts = globals
+                .get("posts")
+                .expect("globals to have posts key")
+                .as_array().expect("posts to be an array");
+            let mut url = "";
+            for post in posts {
+                let post_id = post.get("id").expect("post to have id key");
+                let post_title = post.get("title").expect("post to have title key");
+                log::debug!("post {} has uuid {}", post_title, post_id);
+                if post_id == &JsonValue::from(&link[1]) {
+                    url = post
+                        .get("link")
+                        .expect("post to have link key")
+                        .as_str()
+                        .expect("link to be a string");
+                }
+            }
+            if url == "" {
+                panic!("uuid in text ({}) to correspond to a post", &link[1])
+            }
+            url
+        };
+        let uuid_part = link.get(1).expect("link to have uuid");
+        new_text.replace_range(
+            (offset + uuid_part.start() - 1)..(offset + uuid_part.end()),
+            &url,
+        );
+        offset += uuid_part.start() + url.len() - 1;
+        text = text[uuid_part.end()..].into();
+    }
+    new_text
 }
 
 type JsonMap = serde_json::Map<String, serde_json::Value>;
@@ -243,7 +289,8 @@ fn get_file_stem<'a>(path: &'a PathBuf) -> &'a str {
 }
 
 fn get_file_ext<'a>(path: &'a PathBuf) -> &'a str {
-    path.extension().expect("couldn't extract file extension")
+    path.extension()
+        .expect("couldn't extract file extension")
         .to_str()
         .expect("could not convert file extension to string")
 }
@@ -253,4 +300,46 @@ fn get_date<'a>(v: &'a JsonMap) -> &'a str {
         .expect("expected frontmatter to contain date")
         .as_str()
         .expect("date must be a string")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_replace_uuid_links() {
+        let text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
+        let mut globals = JsonMap::new();
+        let mut posts = JsonMap::new();
+        let mut post_meta = JsonMap::new();
+        post_meta.insert("link".into(), "/blog/my_post.html".into());
+        posts.insert("abc123ABC987".into(), post_meta.into());
+        globals.insert("posts".into(), posts.into());
+        let new_text = replace_uuid_links(text, &globals);
+        assert_eq!(
+            new_text,
+            "Here is [a uuid link](/blog/my_post.html) for you!"
+        )
+    }
+
+    #[test]
+    fn can_replace_multiple_uuid_links() {
+        let mut text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
+        text.push_str("\n\n");
+        text.push_str("Here is [another uuid link](:xyz456XYZ751) for you!");
+        let mut globals = JsonMap::new();
+        let mut posts = JsonMap::new();
+        let mut post_meta = JsonMap::new();
+        post_meta.insert("link".into(), "/blog/my_post.html".into());
+        let mut other_post_meta = JsonMap::new();
+        other_post_meta.insert("link".into(), "/blog/my_other_post.html".into());
+        posts.insert("abc123ABC987".into(), post_meta.into());
+        posts.insert("xyz456XYZ751".into(), other_post_meta.into());
+        globals.insert("posts".into(), posts.into());
+        let new_text = replace_uuid_links(text, &globals);
+        let mut expected_text = String::from("Here is [a uuid link](/blog/my_post.html) for you!");
+        expected_text.push_str("\n\n");
+        expected_text.push_str("Here is [another uuid link](/blog/my_other_post.html) for you!");
+        assert_eq!(new_text, expected_text)
+    }
 }
