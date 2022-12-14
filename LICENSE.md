@@ -205,7 +205,7 @@ additional liability.
 
 END OF TERMS AND CONDITIONS
 
-Copyright 2021 Ben Little
+Copyright 2022 Ben Little
 
 Licensed under the Do No Harm License, Version 0.1 (the "License"); you may not use this file except
 in compliance with the License. You may obtain a

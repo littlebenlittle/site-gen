@@ -1,11 +1,24 @@
 #[macro_use]
 extern crate handlebars;
+use self::file_helpers::*;
 use anyhow::{bail, Context, Result};
 use handlebars::{Handlebars, JsonValue};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
+
+use regex::Regex;
+
+type JsonMap = serde_json::Map<String, serde_json::Value>;
+
+type Directory = Vec<(String, Node)>;
+
+#[derive(Debug)]
+enum Node {
+    Page(String),
+    Dir(Directory),
+}
 
 handlebars_helper!(lt: |left: u16, right: u16| {
     left < right
@@ -40,9 +53,9 @@ fn main() -> Result<()> {
     register_templates_dir(PathBuf::from(&config.templates), &mut handlebars)?;
 
     log::info!("processing blog posts");
-    let post_metas: Vec<JsonMap> = process_blog_posts(PathBuf::from(&config.blog))?;
-    let mut globals = serde_json::Map::new();
-    globals.insert(String::from("posts"), json!(post_metas));
+    let globals = json!({
+        "posts": process_blog_posts(PathBuf::from(&config.blog))?
+    });
 
     log::info!("compiling site");
     let site = compile_dir(PathBuf::from(&config.source), &globals, handlebars)?;
@@ -53,17 +66,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-type Directory = Vec<(String, Node)>;
-
-#[derive(Debug)]
-enum Node {
-    Page(String),
-    Dir(Directory),
-}
-
 fn compile_dir<T: AsRef<std::path::Path>>(
     path: T,
-    globals: &JsonMap,
+    globals: &JsonValue,
     handlebars: Handlebars,
 ) -> Result<Directory> {
     let path = PathBuf::from(path.as_ref());
@@ -97,10 +102,11 @@ fn compile_dir<T: AsRef<std::path::Path>>(
 }
 
 fn compile_file(
-    path: &PathBuf,
-    globals: &JsonMap,
+    path: impl AsRef<Path>,
+    globals: &JsonValue,
     handlebars: &Handlebars,
 ) -> Result<Option<(String, String)>> {
+    let path = path.as_ref();
     match get_file_ext(path) {
         "md" => Ok(compile_markdown(path, globals, handlebars)?),
         _ => {
@@ -111,16 +117,17 @@ fn compile_file(
 }
 
 fn compile_markdown(
-    path: &PathBuf,
-    globals: &JsonMap,
+    path: impl AsRef<Path>,
+    globals: &JsonValue,
     handlebars: &Handlebars,
 ) -> Result<Option<(String, String)>> {
-    let (fm, mut md): (JsonMap, String) = split_frontmatter(path)?;
+    let path = path.as_ref();
+    let (fm, mut md): (JsonValue, String) = split_frontmatter(path)?;
     let mut fm = replace_globals(fm, globals);
     md = replace_uuid_links(md, globals);
     let tmpl_name: String = fm
         .get("template")
-        .expect("expected fronmatter to contain template name")
+        .expect("expected frontmatter to contain template name")
         .as_str()
         .expect("expected template name to be string")
         .to_owned();
@@ -132,7 +139,8 @@ fn compile_markdown(
     return Ok(Some((html, out_name)));
 }
 
-fn replace_globals(obj: JsonMap, globals: &JsonMap) -> JsonMap {
+fn replace_globals(obj: JsonValue, globals: &JsonValue) -> JsonMap {
+    let obj = obj.as_object().expect("obj to be mapping");
     let mut new_obj = obj.clone();
     for (key, val) in obj {
         if let Some(val) = val.as_str() {
@@ -147,9 +155,7 @@ fn replace_globals(obj: JsonMap, globals: &JsonMap) -> JsonMap {
     new_obj
 }
 
-use regex::Regex;
-
-fn replace_uuid_links(mut text: String, globals: &JsonMap) -> String {
+fn replace_uuid_links(mut text: String, globals: &JsonValue) -> String {
     let mut new_text = text.clone();
     let re = Regex::new(r"\[[^\]]+\]\(:([a-zA-Z0-9]+)\)").unwrap();
     let mut offset = 0;
@@ -162,13 +168,13 @@ fn replace_uuid_links(mut text: String, globals: &JsonMap) -> String {
             let posts = globals
                 .get("posts")
                 .expect("globals to have posts key")
-                .as_array().expect("posts to be an array");
+                .as_object()
+                .expect("posts to be a mapping");
             let mut url = "";
-            for post in posts {
-                let post_id = post.get("id").expect("post to have id key");
+            for (id, post) in posts {
                 let post_title = post.get("title").expect("post to have title key");
-                log::debug!("post {} has uuid {}", post_title, post_id);
-                if post_id == &JsonValue::from(&link[1]) {
+                log::debug!("post {} has uuid {}", post_title, id);
+                if id == &JsonValue::from(&link[1]) {
                     url = post
                         .get("link")
                         .expect("post to have link key")
@@ -192,25 +198,16 @@ fn replace_uuid_links(mut text: String, globals: &JsonMap) -> String {
     new_text
 }
 
-type JsonMap = serde_json::Map<String, serde_json::Value>;
-
-fn split_frontmatter(path: &PathBuf) -> Result<(JsonMap, String)> {
+fn split_frontmatter(path: impl AsRef<Path>) -> Result<(JsonValue, String)> {
     use extract_frontmatter::{config::Splitter, Extractor};
     let fm_extractor = Extractor::new(Splitter::EnclosingLines("---"));
     let data = std::fs::read_to_string(path)?;
     let (fm, data) = fm_extractor.extract(&data);
-    let options: JsonMap = {
-        let options: serde_yaml::Value = serde_yaml::from_str(&fm)?;
-        let options: serde_json::Value = json!(options);
-        options
-            .as_object()
-            .expect("expected fronmatter to be mapping")
-            .clone()
-    };
+    let options = serde_yaml::from_str::<JsonValue>(&fm)?;
     Ok((options, data.to_owned()))
 }
 
-fn emit_directory<T: AsRef<std::path::Path>>(dir: Directory, target: T) -> Result<()> {
+fn emit_directory(dir: Directory, target: impl AsRef<Path>) -> Result<()> {
     for (path, node) in dir {
         let mut target = PathBuf::from(target.as_ref());
         target.push(path);
@@ -236,10 +233,7 @@ fn emit_directory<T: AsRef<std::path::Path>>(dir: Directory, target: T) -> Resul
     Ok(())
 }
 
-fn register_templates_dir<T: AsRef<std::path::Path>>(
-    path: T,
-    handlebars: &mut Handlebars,
-) -> Result<()> {
+fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -> Result<()> {
     for entry in std::fs::read_dir(path)? {
         let entry: std::fs::DirEntry = entry?;
         let path: std::path::PathBuf = entry.path();
@@ -257,49 +251,69 @@ fn register_templates_dir<T: AsRef<std::path::Path>>(
     Ok(())
 }
 
-fn process_blog_posts<T: AsRef<std::path::Path>>(blog_dir: T) -> Result<Vec<JsonMap>> {
-    let mut post_metas: Vec<JsonMap> = vec![];
-    for entry in std::fs::read_dir(blog_dir)? {
+fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<JsonMap> {
+    let blog_dir = blog_dir.as_ref();
+    let mut posts = JsonMap::new();
+    for entry in std::fs::read_dir(&blog_dir)? {
         let path = entry?.path();
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}-").unwrap();
         if re.is_match(get_file_name(&path)) {
-            let (mut fm, _): (JsonMap, _) = split_frontmatter(&path)?;
+            let (mut fm, _): (JsonValue, _) = split_frontmatter(&path)?;
+            let fm = fm.as_object_mut().unwrap();
             let mut out_name = get_file_stem(&path).to_owned();
             out_name.push_str(".html");
-            fm.insert("link".to_owned(), json!(out_name));
-            post_metas.push(fm)
+            let mut link = PathBuf::new();
+            link.push("/");
+            link.push(get_file_name(&blog_dir));
+            link.push(&out_name);
+            log::debug!("link is {link:?}");
+            fm.insert("link".to_owned(), json!(link));
+            let id = fm
+                .get("id")
+                .expect("post to have id")
+                .as_str()
+                .expect("post id to be string");
+            posts.insert(id.to_owned(), json!(fm));
         }
     }
-    post_metas.sort_by(|a: &JsonMap, b: &JsonMap| get_date(b).cmp(get_date(a)));
-    Ok(post_metas)
+    // posts.sort_by(|a: &JsonValue, b: &JsonValue| get_date(b).cmp(get_date(a)));
+    Ok(posts)
 }
 
-fn get_file_name<'a>(path: &'a PathBuf) -> &'a str {
-    path.file_name()
-        .expect("couldn't get file_name")
-        .to_str()
-        .expect("couldn't convert file_name to string")
+mod file_helpers {
+    use std::path::Path;
+
+    pub fn get_file_name<'a>(path: &'a Path) -> &'a str {
+        path.file_name()
+            .expect("couldn't get file_name")
+            .to_str()
+            .expect("couldn't convert file_name to string")
+    }
+
+    pub fn get_file_stem<'a>(path: &'a Path) -> &'a str {
+        path.file_stem()
+            .expect("couldn't get file_stem")
+            .to_str()
+            .expect("couldn't convert file_stem to string")
+    }
+
+    pub fn get_file_ext<'a>(path: &'a Path) -> &'a str {
+        path.extension()
+            .expect("couldn't extract file extension")
+            .to_str()
+            .expect("could not convert file extension to string")
+    }
+
+    pub fn get_date<'a>(v: &'a serde_json::Value) -> &'a str {
+        v.get("date")
+            .expect("expected frontmatter to contain date")
+            .as_str()
+            .expect("date must be a string")
+    }
 }
 
-fn get_file_stem<'a>(path: &'a PathBuf) -> &'a str {
-    path.file_stem()
-        .expect("couldn't get file_stem")
-        .to_str()
-        .expect("couldn't convert file_stem to string")
-}
-
-fn get_file_ext<'a>(path: &'a PathBuf) -> &'a str {
-    path.extension()
-        .expect("couldn't extract file extension")
-        .to_str()
-        .expect("could not convert file extension to string")
-}
-
-fn get_date<'a>(v: &'a JsonMap) -> &'a str {
-    v.get("date")
-        .expect("expected frontmatter to contain date")
-        .as_str()
-        .expect("date must be a string")
+fn expand_shorthand(text: &str, config: impl Into<JsonValue>) -> String {
+    todo!()
 }
 
 #[cfg(test)]
@@ -309,12 +323,14 @@ mod tests {
     #[test]
     fn can_replace_uuid_links() {
         let text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
-        let mut globals = JsonMap::new();
-        let mut posts = JsonMap::new();
-        let mut post_meta = JsonMap::new();
-        post_meta.insert("link".into(), "/blog/my_post.html".into());
-        posts.insert("abc123ABC987".into(), post_meta.into());
-        globals.insert("posts".into(), posts.into());
+        let globals = json!({
+            "posts":  {
+                "abc123ABC987": {
+                    "title": "My Post",
+                    "link": "/blog/my_post.html"
+                }
+            }
+        });
         let new_text = replace_uuid_links(text, &globals);
         assert_eq!(
             new_text,
@@ -327,19 +343,39 @@ mod tests {
         let mut text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
         text.push_str("\n\n");
         text.push_str("Here is [another uuid link](:xyz456XYZ751) for you!");
-        let mut globals = JsonMap::new();
-        let mut posts = JsonMap::new();
-        let mut post_meta = JsonMap::new();
-        post_meta.insert("link".into(), "/blog/my_post.html".into());
-        let mut other_post_meta = JsonMap::new();
-        other_post_meta.insert("link".into(), "/blog/my_other_post.html".into());
-        posts.insert("abc123ABC987".into(), post_meta.into());
-        posts.insert("xyz456XYZ751".into(), other_post_meta.into());
-        globals.insert("posts".into(), posts.into());
+        let globals = json!({
+            "posts":  {
+                "abc123ABC987": {
+                    "title": "My Post",
+                    "link": "/blog/my_post.html",
+                },
+                "xyz456XYZ751": {
+                    "title": "My Other Post",
+                    "link": "/blog/my_other_post.html",
+                },
+            }
+        });
         let new_text = replace_uuid_links(text, &globals);
         let mut expected_text = String::from("Here is [a uuid link](/blog/my_post.html) for you!");
         expected_text.push_str("\n\n");
         expected_text.push_str("Here is [another uuid link](/blog/my_other_post.html) for you!");
         assert_eq!(new_text, expected_text)
+    }
+
+    #[test]
+    fn can_expand_shorthand_sequences() {
+        let mut text = String::from("This is a longdash--it should expand.");
+        text.push_str("\n\n");
+        text.push_str("This [looks like a longdash](http://example.com/link--thing) and it should NOT expand.");
+        let mut expect = String::from("This is a longdash&#151;it should expand.");
+        expect.push_str("\n\n");
+        expect.push_str("This [looks like a longdash](http://example.com/link--thing) and it should NOT expand.");
+        let got: String = expand_shorthand(
+            &text,
+            json!({
+                String::from("--"): String::from("&#151;")
+            }),
+        );
+        assert_eq!(got, expect)
     }
 }
