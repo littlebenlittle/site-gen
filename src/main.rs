@@ -83,7 +83,7 @@ fn compile_dir<T: AsRef<std::path::Path>>(
         let entry_path: PathBuf = entry.path();
         let file_name = get_file_name(&entry_path);
         if file_name.starts_with("_") {
-            log::info!("ignoring path with leading underscore: {entry_path:?}");
+            log::debug!("ignoring path with leading underscore: {entry_path:?}");
             continue;
         }
         if meta.is_file() {
@@ -168,10 +168,15 @@ fn replace_uuid_links(mut text: String, globals: &JsonValue) -> String {
             let posts = globals
                 .get("posts")
                 .expect("globals to have posts key")
-                .as_object()
-                .expect("posts to be a mapping");
+                .as_array()
+                .expect("posts to be an array");
             let mut url = "";
-            for (id, post) in posts {
+            for post in posts {
+                let id = post
+                    .get("id")
+                    .expect("post meta to have id")
+                    .as_str()
+                    .expect("post id to be string");
                 let post_title = post.get("title").expect("post to have title key");
                 log::debug!("post {} has uuid {}", post_title, id);
                 if id == &JsonValue::from(&link[1]) {
@@ -251,9 +256,9 @@ fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -
     Ok(())
 }
 
-fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<JsonMap> {
+fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<Vec<JsonValue>> {
     let blog_dir = blog_dir.as_ref();
-    let mut posts = JsonMap::new();
+    let mut posts = Vec::new();
     for entry in std::fs::read_dir(&blog_dir)? {
         let path = entry?.path();
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}-").unwrap();
@@ -268,15 +273,10 @@ fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<JsonMap> {
             link.push(&out_name);
             log::debug!("link is {link:?}");
             fm.insert("link".to_owned(), json!(link));
-            let id = fm
-                .get("id")
-                .expect("post to have id")
-                .as_str()
-                .expect("post id to be string");
-            posts.insert(id.to_owned(), json!(fm));
+            posts.push(json!(fm));
         }
     }
-    // posts.sort_by(|a: &JsonValue, b: &JsonValue| get_date(b).cmp(get_date(a)));
+    posts.sort_by(|a: &JsonValue, b: &JsonValue| get_date(b).cmp(get_date(a)));
     Ok(posts)
 }
 
