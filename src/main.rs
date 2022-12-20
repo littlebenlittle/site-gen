@@ -312,8 +312,29 @@ mod file_helpers {
     }
 }
 
-fn expand_shorthand(text: &str, config: impl Into<JsonValue>) -> String {
-    todo!()
+fn expand_shorthand(text: &str, table: JsonValue) -> String {
+    let table = table.as_object().expect("shorthand table to be object");
+    let mut new_text = text.clone();
+    for (from, to) in table {
+        let from = from.as_str().expect("shorthand target to be string");
+        let to = to.as_str().expect("shorthand replacement to be string");
+        let re = Regex::new(from).unwrap();
+        let mut offset = 0;
+        loop {
+            let link = match re.captures(&text) {
+                Some(cap) => cap,
+                None => break,
+            };
+            let uuid_part = link.get(1).expect("link to have uuid");
+            new_text.replace_range(
+                (offset + uuid_part.start() - 1)..(offset + uuid_part.end()),
+                &url,
+            );
+            offset += uuid_part.start() + url.len() - 1;
+            text = text[uuid_part.end()..].into();
+        }
+    }
+    "".into()
 }
 
 #[cfg(test)]
@@ -373,7 +394,7 @@ mod tests {
         let got: String = expand_shorthand(
             &text,
             json!({
-                String::from("--"): String::from("&#151;")
+                "--": "&#151;"
             }),
         );
         assert_eq!(got, expect)
