@@ -259,25 +259,34 @@ fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -
 fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<Vec<JsonValue>> {
     let blog_dir = blog_dir.as_ref();
     let mut posts = Vec::new();
-    for entry in std::fs::read_dir(&blog_dir)? {
-        let path = entry?.path();
-        let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}-").unwrap();
-        if re.is_match(get_file_name(&path)) {
-            let (mut fm, _): (JsonValue, _) = split_frontmatter(&path)?;
-            let fm = fm.as_object_mut().unwrap();
-            let mut out_name = get_file_stem(&path).to_owned();
-            out_name.push_str(".html");
-            let mut link = PathBuf::new();
-            link.push("/");
-            link.push(get_file_name(&blog_dir));
-            link.push(&out_name);
-            log::debug!("link is {link:?}");
-            fm.insert("link".to_owned(), json!(link));
-            posts.push(json!(fm));
-        }
-    }
+    process_blog_posts_dir(blog_dir, &mut posts)?;
     posts.sort_by(|a: &JsonValue, b: &JsonValue| get_date(b).cmp(get_date(a)));
     Ok(posts)
+}
+
+fn process_blog_posts_dir(path: impl AsRef<Path>, posts: &mut Vec<JsonValue>) -> Result<()> {
+    let dir_path = path.as_ref();
+    for entry in std::fs::read_dir(dir_path)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            process_blog_posts_dir(path, posts)?;
+        } else {
+            if get_file_ext(&path) == "md" {
+                let (mut fm, _): (JsonValue, _) = split_frontmatter(&path)?;
+                let fm = fm.as_object_mut().unwrap();
+                let mut out_name = get_file_stem(&path).to_owned();
+                out_name.push_str(".html");
+                let mut link = PathBuf::new();
+                link.push("/");
+                link.push(get_file_name(dir_path));
+                link.push(&out_name);
+                log::debug!("link is {link:?}");
+                fm.insert("link".to_owned(), json!(link));
+                posts.push(json!(fm));
+            }
+        }
+    }
+    Ok(())
 }
 
 mod file_helpers {
