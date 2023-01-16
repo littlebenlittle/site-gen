@@ -257,19 +257,20 @@ fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -
 }
 
 fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<Vec<JsonValue>> {
-    let blog_dir = blog_dir.as_ref();
+    let blog_dir = blog_dir.as_ref().canonicalize()?;
     let mut posts = Vec::new();
-    process_blog_posts_dir(blog_dir, &mut posts)?;
+    process_blog_posts_dir(&blog_dir, &blog_dir, &mut posts)?;
     posts.sort_by(|a: &JsonValue, b: &JsonValue| get_date(b).cmp(get_date(a)));
     Ok(posts)
 }
 
-fn process_blog_posts_dir(path: impl AsRef<Path>, posts: &mut Vec<JsonValue>) -> Result<()> {
+fn process_blog_posts_dir(path: impl AsRef<Path>, blog_dir: impl AsRef<Path>, posts: &mut Vec<JsonValue>) -> Result<()> {
     let dir_path = path.as_ref();
+    let blog_dir = blog_dir.as_ref();
     for entry in std::fs::read_dir(dir_path)? {
         let path = entry?.path();
         if path.is_dir() {
-            process_blog_posts_dir(path, posts)?;
+            process_blog_posts_dir(path, &blog_dir, posts)?;
         } else {
             if get_file_ext(&path) == "md" {
                 let (mut fm, _): (JsonValue, _) = split_frontmatter(&path)?;
@@ -277,8 +278,8 @@ fn process_blog_posts_dir(path: impl AsRef<Path>, posts: &mut Vec<JsonValue>) ->
                 let mut out_name = get_file_stem(&path).to_owned();
                 out_name.push_str(".html");
                 let mut link = PathBuf::new();
-                link.push("/");
-                link.push(get_file_name(dir_path));
+                link.push("/blog");
+                link.push(path.strip_prefix(&blog_dir)?.parent().unwrap());
                 link.push(&out_name);
                 log::debug!("link is {link:?}");
                 fm.insert("link".to_owned(), json!(link));
@@ -321,29 +322,24 @@ mod file_helpers {
     }
 }
 
-fn expand_shorthand(text: &str, table: JsonValue) -> String {
+fn expand_shorthand(mut text: &str, table: JsonValue) -> String {
     let table = table.as_object().expect("shorthand table to be object");
-    let mut new_text = text.clone();
+    let mut new_text = text.to_owned();
     for (from, to) in table {
-        let from = from.as_str().expect("shorthand target to be string");
-        let to = to.as_str().expect("shorthand replacement to be string");
-        let re = Regex::new(from).unwrap();
+        let from = from.as_str();
+        let to = to.as_str().expect("shorthand target to be a string");
+        let re = Regex::new(from).expect(&format!("a valid regex. Got \"{from}\""));
         let mut offset = 0;
-        loop {
-            let link = match re.captures(&text) {
-                Some(cap) => cap,
-                None => break,
-            };
-            let uuid_part = link.get(1).expect("link to have uuid");
-            new_text.replace_range(
-                (offset + uuid_part.start() - 1)..(offset + uuid_part.end()),
-                &url,
-            );
-            offset += uuid_part.start() + url.len() - 1;
-            text = text[uuid_part.end()..].into();
+        while let Some(mat) = re.find(text) {
+            let start = offset + mat.start();
+            let end = offset + mat.end();
+            new_text.replace_range(start..end, "");
+            new_text.insert_str(mat.start(), to);
+            offset += start + to.len() - 1;
+            text = text[end..].into();
         }
     }
-    "".into()
+    new_text
 }
 
 #[cfg(test)]
@@ -408,4 +404,6 @@ mod tests {
         );
         assert_eq!(got, expect)
     }
+    
+
 }
