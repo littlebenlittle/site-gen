@@ -81,7 +81,7 @@ fn compile_dir<T: AsRef<std::path::Path>>(
         let entry = entry?;
         let meta = entry.metadata()?;
         let entry_path: PathBuf = entry.path();
-        let file_name = get_file_name(&entry_path);
+        let file_name = get_file_name(&entry_path)?;
         if file_name.starts_with("_") {
             log::debug!("ignoring path with leading underscore: {entry_path:?}");
             continue;
@@ -107,7 +107,7 @@ fn compile_file(
     handlebars: &Handlebars,
 ) -> Result<Option<(String, String)>> {
     let path = path.as_ref();
-    match get_file_ext(path) {
+    match get_file_ext(path)? {
         "md" => Ok(compile_markdown(path, globals, handlebars)?),
         _ => {
             log::debug!("unhandled file extension for {path:?}");
@@ -124,7 +124,7 @@ fn compile_markdown(
     let path = path.as_ref();
     let (fm, mut md): (JsonValue, String) = split_frontmatter(path)?;
     let mut fm = replace_globals(fm, globals);
-    md = replace_uuid_links(md, globals);
+    md = replace_uuid_links(md, globals).context(format!("processing {}", path.display()))?;
     let tmpl_name: String = fm
         .get("template")
         .expect("expected frontmatter to contain template name")
@@ -134,7 +134,7 @@ fn compile_markdown(
     let content = markdown::to_html(&md);
     fm.insert(String::from("content"), json!(content));
     let html: String = handlebars.render(&tmpl_name, &fm).context("{path:?}")?;
-    let mut out_name = get_file_stem(path).to_owned();
+    let mut out_name = get_file_stem(path)?.to_owned();
     out_name.push_str(".html");
     return Ok(Some((html, out_name)));
 }
@@ -155,7 +155,7 @@ fn replace_globals(obj: JsonValue, globals: &JsonValue) -> JsonMap {
     new_obj
 }
 
-fn replace_uuid_links(mut text: String, globals: &JsonValue) -> String {
+fn replace_uuid_links(mut text: String, globals: &JsonValue) -> Result<String> {
     let mut new_text = text.clone();
     let re = Regex::new(r"\[[^\]]+\]\(:([a-zA-Z0-9]+)\)").unwrap();
     let mut offset = 0;
@@ -188,7 +188,7 @@ fn replace_uuid_links(mut text: String, globals: &JsonValue) -> String {
                 }
             }
             if url == "" {
-                panic!("uuid in text ({}) to correspond to a post", &link[1])
+                bail!("uuid in text ({}) should correspond to a post", &link[1])
             }
             url
         };
@@ -200,7 +200,7 @@ fn replace_uuid_links(mut text: String, globals: &JsonValue) -> String {
         offset += uuid_part.start() + url.len() - 1;
         text = text[uuid_part.end()..].into();
     }
-    new_text
+    Ok(new_text)
 }
 
 fn split_frontmatter(path: impl AsRef<Path>) -> Result<(JsonValue, String)> {
@@ -244,8 +244,8 @@ fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -
         let path: std::path::PathBuf = entry.path();
         let metadata = entry.metadata().expect("couldn't get metadata for path");
         if metadata.is_file() {
-            if get_file_ext(&path) == "hbs" {
-                handlebars.register_template_file(get_file_stem(&path), &path)?;
+            if get_file_ext(&path)? == "hbs" {
+                handlebars.register_template_file(get_file_stem(&path)?, &path)?;
             } else {
                 log::info!("skipping {path:?} due to extension");
             }
@@ -264,18 +264,40 @@ fn process_blog_posts(blog_dir: impl AsRef<Path>) -> Result<Vec<JsonValue>> {
     Ok(posts)
 }
 
-fn process_blog_posts_dir(path: impl AsRef<Path>, blog_dir: impl AsRef<Path>, posts: &mut Vec<JsonValue>) -> Result<()> {
+fn process_blog_posts_dir(
+    path: impl AsRef<Path>,
+    blog_dir: impl AsRef<Path>,
+    posts: &mut Vec<JsonValue>,
+) -> Result<()> {
     let dir_path = path.as_ref();
     let blog_dir = blog_dir.as_ref();
+    if get_file_name(dir_path)?.starts_with("_") {
+        log::info!(
+            "skipping directory with leading underscore: {}",
+            dir_path.display()
+        );
+        return Ok(());
+    }
     for entry in std::fs::read_dir(dir_path)? {
         let path = entry?.path();
         if path.is_dir() {
             process_blog_posts_dir(path, &blog_dir, posts)?;
         } else {
-            if get_file_ext(&path) == "md" {
+            let filename = get_file_name(&path)?;
+            if filename.starts_with("_") {
+                log::info!("skipping file with leading underscore: {}", path.display());
+                continue;
+            }
+            if filename == "index.md" {
+                log::info!("skipping index");
+                continue;
+            }
+            if get_file_ext(&path)? == "md" {
                 let (mut fm, _): (JsonValue, _) = split_frontmatter(&path)?;
                 let fm = fm.as_object_mut().unwrap();
-                let mut out_name = get_file_stem(&path).to_owned();
+                ensure_key(fm, "date", "str")
+                    .context(format!("processing file {}", path.display()))?;
+                let mut out_name = get_file_stem(&path)?.to_owned();
                 out_name.push_str(".html");
                 let mut link = PathBuf::new();
                 link.push("/blog");
@@ -283,42 +305,62 @@ fn process_blog_posts_dir(path: impl AsRef<Path>, blog_dir: impl AsRef<Path>, po
                 link.push(&out_name);
                 log::debug!("link is {link:?}");
                 fm.insert("link".to_owned(), json!(link));
-                posts.push(json!(fm));
+                posts.push(json! {fm});
             }
         }
     }
     Ok(())
 }
 
+fn ensure_key(v: &JsonMap, key: &str, kind: &'static str) -> Result<()> {
+    match v.get(key) {
+        None => bail!("value does not contain key `{key}`"),
+        Some(val) => match kind {
+            "str" => match val.as_str() {
+                None => bail!("expected value of `{key}` to be of type `{kind}`"),
+                Some(_) => Ok(()),
+            },
+            _ => panic!("invalid kind `{kind}`"),
+        },
+    }
+}
+
 mod file_helpers {
+    use super::{bail, Result};
     use std::path::Path;
 
-    pub fn get_file_name<'a>(path: &'a Path) -> &'a str {
-        path.file_name()
-            .expect("couldn't get file_name")
-            .to_str()
-            .expect("couldn't convert file_name to string")
+    pub fn get_file_name<'a>(path: &'a Path) -> Result<&'a str> {
+        match path.file_name() {
+            None => bail!("couldn't get file name"),
+            Some(stem) => match stem.to_str() {
+                None => bail!("could not convert file name to string"),
+                Some(s) => Ok(s),
+            },
+        }
     }
 
-    pub fn get_file_stem<'a>(path: &'a Path) -> &'a str {
-        path.file_stem()
-            .expect("couldn't get file_stem")
-            .to_str()
-            .expect("couldn't convert file_stem to string")
+    pub fn get_file_stem<'a>(path: &'a Path) -> Result<&'a str> {
+        match path.file_stem() {
+            None => bail!("couldn't get file sterm"),
+            Some(stem) => match stem.to_str() {
+                None => bail!("could not convert file stem to string"),
+                Some(s) => Ok(s),
+            },
+        }
     }
 
-    pub fn get_file_ext<'a>(path: &'a Path) -> &'a str {
-        path.extension()
-            .expect("couldn't extract file extension")
-            .to_str()
-            .expect("could not convert file extension to string")
+    pub fn get_file_ext<'a>(path: &'a Path) -> Result<&'a str> {
+        match path.extension() {
+            None => bail!("couldn't extract file extension"),
+            Some(ext) => match ext.to_str() {
+                None => bail!("could not convert file extension to string"),
+                Some(s) => Ok(s),
+            },
+        }
     }
 
     pub fn get_date<'a>(v: &'a serde_json::Value) -> &'a str {
-        v.get("date")
-            .expect("expected frontmatter to contain date")
-            .as_str()
-            .expect("date must be a string")
+        v.get("date").unwrap().as_str().unwrap()
     }
 }
 
@@ -347,7 +389,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn can_replace_uuid_links() {
+    fn can_replace_uuid_links() -> Result<()> {
         let text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
         let globals = json!({
             "posts":  {
@@ -357,15 +399,16 @@ mod tests {
                 }
             }
         });
-        let new_text = replace_uuid_links(text, &globals);
+        let new_text = replace_uuid_links(text, &globals)?;
         assert_eq!(
             new_text,
             "Here is [a uuid link](/blog/my_post.html) for you!"
-        )
+        );
+        Ok(())
     }
 
     #[test]
-    fn can_replace_multiple_uuid_links() {
+    fn can_replace_multiple_uuid_links() -> Result<()> {
         let mut text = String::from("Here is [a uuid link](:abc123ABC987) for you!");
         text.push_str("\n\n");
         text.push_str("Here is [another uuid link](:xyz456XYZ751) for you!");
@@ -381,11 +424,12 @@ mod tests {
                 },
             }
         });
-        let new_text = replace_uuid_links(text, &globals);
+        let new_text = replace_uuid_links(text, &globals)?;
         let mut expected_text = String::from("Here is [a uuid link](/blog/my_post.html) for you!");
         expected_text.push_str("\n\n");
         expected_text.push_str("Here is [another uuid link](/blog/my_other_post.html) for you!");
-        assert_eq!(new_text, expected_text)
+        assert_eq!(new_text, expected_text);
+        Ok(())
     }
 
     #[test]
@@ -404,6 +448,4 @@ mod tests {
         );
         assert_eq!(got, expect)
     }
-    
-
 }
