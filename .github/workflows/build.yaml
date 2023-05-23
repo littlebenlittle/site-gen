@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Yolo Build
-      run: cargo build --verbose --target release
+      run: cargo build --verbose --release
     - uses: ncipollo/release-action@v1
       with:
         artifacts: "target/release/site-gen"
