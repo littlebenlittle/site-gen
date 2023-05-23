@@ -2,9 +2,7 @@ name: Build and release
 
 on:
   push:
-    branches: [ $default-branch, "github-actions" ]
-  pull_request:
-    branches: [ $default-branch ]
+    tag: '*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,4 +19,4 @@ jobs:
     - uses: ncipollo/release-action@v1
       with:
         artifacts: "target/release/site-gen"
-        body: "Automated release -- use at your own risk"
+        body: "Automated Yolo release -- use at your own risk"
