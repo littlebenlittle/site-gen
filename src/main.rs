@@ -34,12 +34,14 @@ struct Config {
     templates: String,
     ///path to directory with blog files
     blog: String,
+    ///paths to exclude
+    ignore: Vec<String>,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    let config: Config = {
+    let mut config: Config = {
         let path = std::fs::File::open("config.yaml").context("could not open config")?;
         let data = std::io::BufReader::new(path);
         serde_yaml::from_reader(data)?
@@ -58,7 +60,10 @@ fn main() -> Result<()> {
     });
 
     log::info!("compiling site");
-    let site = compile_dir(PathBuf::from(&config.source), &globals, handlebars)?;
+    let mut ignore = Vec::<String>::new();
+    ignore.append(&mut config.ignore);
+    ignore.push(config.templates);
+    let site = compile_dir(PathBuf::from(&config.source), &globals, &ignore, handlebars)?;
 
     log::info!("writing site to filesystem");
     emit_directory(site, PathBuf::from(&config.target))?;
@@ -69,12 +74,14 @@ fn main() -> Result<()> {
 fn compile_dir<T: AsRef<std::path::Path>>(
     path: T,
     globals: &JsonValue,
+    ignore: &Vec<String>,
     handlebars: Handlebars,
 ) -> Result<Directory> {
-    let path = PathBuf::from(path.as_ref());
+    let path = PathBuf::from(path.as_ref()).canonicalize()?;
     if !path.is_dir() {
         bail!("not a directory: {path:?}");
     }
+    log::debug!("{}", path.to_str().unwrap());
     log::debug!("processing directory: {path:?}");
     let mut directory: Directory = vec![];
     for entry in std::fs::read_dir(&path)? {
@@ -86,13 +93,18 @@ fn compile_dir<T: AsRef<std::path::Path>>(
             log::debug!("ignoring path with leading underscore: {entry_path:?}");
             continue;
         }
+        log::debug!("{:?}", ignore);
+        if ignore.contains(&file_name.to_owned()) {
+            log::debug!("ignoring path list as ingored in config: {entry_path:?}");
+            continue;
+        }
         if meta.is_file() {
             log::debug!("processing file: {entry_path:?}");
             if let Some((html, out_name)) = compile_file(&entry_path, globals, &handlebars)? {
                 directory.push((out_name, Node::Page(html)));
             }
         } else if meta.is_dir() {
-            let dir = compile_dir(&entry_path, globals, handlebars.clone())?;
+            let dir = compile_dir(&entry_path, globals, ignore, handlebars.clone())?;
             directory.push((file_name.to_owned(), Node::Dir(dir)));
         } else {
             log::debug!("neither file nor directory; skipping");
@@ -230,7 +242,7 @@ fn emit_directory(dir: Directory, target: impl AsRef<Path>) -> Result<()> {
             }
             Node::Dir(dir) => {
                 log::debug!("emitting directory");
-                std::fs::create_dir(&target)?;
+                std::fs::create_dir_all(&target)?;
                 emit_directory(dir, &target)?;
             }
         }
@@ -239,6 +251,10 @@ fn emit_directory(dir: Directory, target: impl AsRef<Path>) -> Result<()> {
 }
 
 fn register_templates_dir(path: impl AsRef<Path>, handlebars: &mut Handlebars) -> Result<()> {
+    if !path.as_ref().is_dir() {
+        log::info!("templates directory doesn't exist");
+        return Ok(())
+    }
     for entry in std::fs::read_dir(path)? {
         let entry: std::fs::DirEntry = entry?;
         let path: std::path::PathBuf = entry.path();
