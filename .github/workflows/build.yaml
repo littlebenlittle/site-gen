@@ -2,7 +2,7 @@ name: Build and release
 
 on:
   push:
-    tag: 'yolo-*'
+    tag: '*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,4 +19,3 @@ jobs:
       with:
         artifacts: "target/release/site-gen"
         body: "This is an untested release. Features are probably broken."
-        allowUpdates: true
