@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use handlebars::{Handlebars, JsonValue};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use clap::Parser;
 
 use serde_json::json;
 
@@ -24,6 +25,13 @@ handlebars_helper!(lt: |left: u16, right: u16| {
     left < right
 });
 
+#[derive(Parser)]
+struct Cli {
+    /// path to config file
+    #[clap(long, default_value = "config.yaml")]
+    config: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
     ///path to directory where compiled site content will be written
@@ -35,14 +43,15 @@ struct Config {
     ///path to directory with blog files
     blog: String,
     ///paths to exclude
-    ignore: Vec<String>,
+    ignore: Option<Vec<String>>,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    let mut config: Config = {
-        let path = std::fs::File::open("config.yaml").context("could not open config")?;
+    let args = Cli::parse();
+    let config: Config = {
+        let path = std::fs::File::open(&args.config).context("could not open config")?;
         let data = std::io::BufReader::new(path);
         serde_yaml::from_reader(data)?
     };
@@ -61,7 +70,7 @@ fn main() -> Result<()> {
 
     log::info!("compiling site");
     let mut ignore = Vec::<String>::new();
-    ignore.append(&mut config.ignore);
+    ignore.append(&mut config.ignore.unwrap_or_default());
     ignore.push(config.templates);
     let site = compile_dir(PathBuf::from(&config.source), &globals, &ignore, handlebars)?;
 
