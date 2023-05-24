@@ -19,3 +19,5 @@ jobs:
       with:
         artifacts: "target/release/site-gen"
         body: "This is an untested release. Features are probably broken."
+        allowUpdate: true
+        tag: yolo
